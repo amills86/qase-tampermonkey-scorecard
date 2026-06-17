@@ -1,0 +1,65 @@
+{
+  "rubric": [
+    {
+      "id": "root-docs",
+      "title": "Root Documentation",
+      "weight": 10,
+      "description": "Repository includes root-level test docs.",
+      "checks": [
+        {
+          "type": "path_exists_any",
+          "paths": ["README.md", "docs/testing.md"]
+        }
+      ]
+    },
+    {
+      "id": "folder-structure",
+      "title": "Core Folder Structure",
+      "weight": 25,
+      "description": "Core testing folders exist.",
+      "checks": [
+        {
+          "type": "path_exists_all",
+          "paths": ["tests", "tests/smoke", "tests/regression", "fixtures", "support"]
+        }
+      ]
+    },
+    {
+      "id": "lint-config",
+      "title": "Linting/Formatting Config",
+      "weight": 15,
+      "description": "At least one linter or formatter config exists.",
+      "checks": [
+        {
+          "type": "path_exists_any",
+          "paths": [".eslintrc.js", ".eslintrc.json", "eslint.config.js", ".prettierrc", "prettier.config.js"]
+        }
+      ]
+    },
+    {
+      "id": "test-naming",
+      "title": "Test Naming Convention",
+      "weight": 25,
+      "description": "At least one test file follows a naming convention.",
+      "checks": [
+        {
+          "type": "file_contains_regex",
+          "path": "README.md",
+          "regex": "(test|spec)\\.(js|ts)"
+        }
+      ]
+    },
+    {
+      "id": "ci-pipeline",
+      "title": "CI Pipeline Present",
+      "weight": 25,
+      "description": "Repo has CI workflow for tests.",
+      "checks": [
+        {
+          "type": "path_exists_any",
+          "paths": [".github/workflows", ".azure-pipelines", "Jenkinsfile"]
+        }
+      ]
+    }
+  ]
+}
