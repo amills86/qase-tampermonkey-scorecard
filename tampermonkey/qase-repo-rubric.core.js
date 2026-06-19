@@ -7,7 +7,7 @@
 
   global.QaseRepoCheckerCore = (function () {
     const DEFAULTS = {
-      standardsName: "Paylocity standards",
+      standardsName: "Standards",
       qaseApiBase: "https://api.qase.io/v1",
       qaseApiToken: ""
     };
@@ -340,7 +340,9 @@
         const evaluation = await evaluateProjectWithQaseApis(projectCode, token);
         renderEvaluation(evaluation, projectCode);
 
-        setStatus(`Evaluation complete (${evaluation.suiteCheck.passed ? "PASS" : "FAIL"} for required suites).`);
+        setStatus(
+          `Evaluation complete (${evaluation.overallPassed ? "PASS" : "FAIL"} overall; suites: ${evaluation.suiteCheck.passed ? "PASS" : "FAIL"}, test plans: ${evaluation.planCheck.passed ? "PASS" : "FAIL"}).`
+        );
       } catch (error) {
         setStatus(`Error: ${error.message}`, true);
       } finally {
@@ -351,9 +353,12 @@
 
     async function evaluateProjectWithQaseApis(projectCode, token) {
       const suiteFetch = await fetchAllSuites(projectCode, token);
+      const planFetch = await fetchAllPlans(projectCode, token);
       const suiteResponse = suiteFetch.lastResponse;
+      const planResponse = planFetch.lastResponse;
 
       const suites = suiteFetch.suites;
+      const plans = planFetch.plans;
       const topLevelSuites = uniqueStrings(
         suites
           .filter((suite) => isTopLevelSuite(suite))
@@ -370,9 +375,27 @@
         matchedTitle: getTopLevelMatchName(topLevelSuites, rule)
       }));
       const passed = requiredRules.every((rule) => hasTopLevelMatch(topLevelSuites, rule));
+      const zeroCasePlans = plans.filter((plan) => plan.casesCount === 0);
+      const planRequirementResults = [
+        {
+          label: "At least 1 test plan",
+          passed: plans.length > 0,
+          details: plans.length > 0 ? `${plans.length} test plan(s) found.` : "No test plans returned by plan endpoint."
+        },
+        {
+          label: "No test plans with 0 cases_count",
+          passed: zeroCasePlans.length === 0,
+          details:
+            zeroCasePlans.length === 0
+              ? "All test plans have at least 1 case."
+              : `Plans with 0 cases_count: ${zeroCasePlans.map((plan) => plan.title).join(", ")}`
+        }
+      ];
+      const planPassed = planRequirementResults.every((result) => result.passed);
 
       return {
-        endpoints: suiteFetch.responses,
+        endpoints: [...suiteFetch.responses, ...planFetch.responses],
+        overallPassed: passed && planPassed,
         suiteCheck: {
           endpoint: suiteResponse ? suiteResponse.url : `${CONFIG.qaseApiBase}/suite/${encodeURIComponent(projectCode)}`,
           topLevelSuites,
@@ -381,6 +404,13 @@
           requirementResults,
           missing,
           passed
+        },
+        planCheck: {
+          endpoint: planResponse ? planResponse.url : `${CONFIG.qaseApiBase}/plan/${encodeURIComponent(projectCode)}`,
+          plans,
+          zeroCasePlans,
+          requirementResults: planRequirementResults,
+          passed: planPassed
         }
       };
     }
@@ -420,6 +450,45 @@
       return {
         responses,
         suites,
+        lastResponse
+      };
+    }
+
+    async function fetchAllPlans(projectCode, token) {
+      const limit = 100;
+      let offset = 0;
+      const maxPages = 20;
+      const responses = [];
+      const plans = [];
+      let lastResponse = null;
+
+      for (let page = 0; page < maxPages; page += 1) {
+        const url = `${CONFIG.qaseApiBase}/plan/${encodeURIComponent(projectCode)}?limit=${limit}&offset=${offset}`;
+        const response = await requestQase(url, token);
+        responses.push(response);
+        lastResponse = response;
+
+        if (!response.ok) {
+          break;
+        }
+
+        const pagePlans = extractQasePlanEntities(response.payload);
+        plans.push(...pagePlans);
+
+        const filtered = Number(response.payload?.result?.filtered || 0);
+        if (pagePlans.length < limit) {
+          break;
+        }
+        if (filtered > 0 && plans.length >= filtered) {
+          break;
+        }
+
+        offset += limit;
+      }
+
+      return {
+        responses,
+        plans,
         lastResponse
       };
     }
@@ -548,6 +617,30 @@
         .filter((entry) => !!entry.name);
     }
 
+    function extractQasePlanEntities(payload) {
+      const rawEntities =
+        payload?.result?.entities ||
+        payload?.result?.plans ||
+        payload?.result ||
+        payload?.data?.entities ||
+        payload?.data?.plans ||
+        payload?.data ||
+        [];
+      const list = Array.isArray(rawEntities) ? rawEntities : [];
+
+      return list
+        .map((item) => {
+          const title = String(item?.title || item?.name || "").trim();
+          const casesCount = Number(item?.cases_count ?? item?.casesCount ?? 0);
+
+          return {
+            title,
+            casesCount: Number.isFinite(casesCount) ? casesCount : 0
+          };
+        })
+        .filter((entry) => !!entry.title);
+    }
+
     function isTopLevelSuite(suite) {
       if (!suite || typeof suite !== "object") {
         return false;
@@ -662,9 +755,35 @@
         })
         .join("");
 
+      const planRequirementRows = (evaluation.planCheck.requirementResults || [])
+        .map((result) => {
+          return `
+            <tr>
+              <td>${escapeHtml(result.label)}</td>
+              <td class="${result.passed ? "qrc-pass" : "qrc-fail"}">${result.passed ? "PASS" : "FAIL"}</td>
+              <td>${escapeHtml(result.details || "")}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      const planRows = (evaluation.planCheck.plans || [])
+        .map((plan) => {
+          return `
+            <tr>
+              <td>${escapeHtml(plan.title)}</td>
+              <td>${escapeHtml(String(plan.casesCount))}</td>
+              <td class="${plan.casesCount === 0 ? "qrc-fail" : "qrc-pass"}">${plan.casesCount === 0 ? "FAIL" : "PASS"}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
       results.innerHTML = `
         <div class="qrc-score">
-          Project: ${escapeHtml(projectCode)} | Required Suite Check: <span class="${evaluation.suiteCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.suiteCheck.passed ? "PASS" : "FAIL"}</span>
+          Project: ${escapeHtml(projectCode)} | Overall: <span class="${evaluation.overallPassed ? "qrc-pass" : "qrc-fail"}">${evaluation.overallPassed ? "PASS" : "FAIL"}</span>
+          <div>Required Suite Check: <span class="${evaluation.suiteCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.suiteCheck.passed ? "PASS" : "FAIL"}</span></div>
+          <div>Test Plan Check: <span class="${evaluation.planCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.planCheck.passed ? "PASS" : "FAIL"}</span></div>
           <div>Required: ${escapeHtml(evaluation.suiteCheck.required.join(", "))}</div>
           <div>Missing: ${escapeHtml(missingText)}</div>
         </div>
@@ -679,6 +798,32 @@
           </thead>
           <tbody>
             ${requirementRows}
+          </tbody>
+        </table>
+
+        <table class="qrc-table">
+          <thead>
+            <tr>
+              <th>Test Plan Rule</th>
+              <th>Status</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${planRequirementRows}
+          </tbody>
+        </table>
+
+        <table class="qrc-table">
+          <thead>
+            <tr>
+              <th>Test Plan</th>
+              <th>cases_count</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${planRows || '<tr><td colspan="3">No test plans returned by plan endpoint.</td></tr>'}
           </tbody>
         </table>
 
