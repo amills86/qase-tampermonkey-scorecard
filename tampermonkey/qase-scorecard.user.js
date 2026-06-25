@@ -8,7 +8,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      api.qase.io
-// @require      https://raw.githubusercontent.com/amills86/qase-tampermonkey-scorecard/refs/heads/main/tampermonkey/qase-repo-rubric.core.js
+// @require      https://raw.githubusercontent.com/amills86/qase-tampermonkey-scorecard/refs/heads/main/tampermonkey/qase-scorecard.core.js
 // ==/UserScript==
 
 // ---------------------------------------------------------------------------
@@ -35,8 +35,8 @@
   };
 
   const core =
-    (typeof window !== "undefined" && window.QaseRepoCheckerCore) ||
-    (typeof QaseRepoCheckerCore !== "undefined" ? QaseRepoCheckerCore : null);
+    (typeof window !== "undefined" && window.QaseScorecardCore) ||
+    (typeof QaseScorecardCore !== "undefined" ? QaseScorecardCore : null);
 
   if (core && typeof core.init === "function") {
     core.init(CONFIG);
