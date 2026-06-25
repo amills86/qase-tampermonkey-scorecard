@@ -1,25 +1,11 @@
-// ==UserScript==
-// @name         Qase Repo Checker
-// @namespace    https://example.internal/qase-repo-checker
-// @version      0.9.0
-// @description  Single-file Qase Repo Checker (no remote core fetch).
-// @author       Your Team
-// @match        https://app.qase.io/*
-// @grant        GM_xmlhttpRequest
-// @grant        GM_addStyle
-// @connect      api.qase.io
-// ==/UserScript==
-
-(function () {
+(function (global) {
   "use strict";
 
-  const CONFIG = {
-    standardsName: "Standards",
-    qaseApiBase: "https://api.qase.io/v1",
-    qaseApiToken: ""
-  };
+  if (global.QaseRepoCheckerCore && typeof global.QaseRepoCheckerCore.init === "function") {
+    return;
+  }
 
-  const QaseRepoCheckerCore = (function () {
+  global.QaseRepoCheckerCore = (function () {
     const DEFAULTS = {
       standardsName: "Standards",
       qaseApiBase: "https://api.qase.io/v1",
@@ -29,11 +15,11 @@
     const REQUIRED_TOP_LEVEL_SUITE_RULES = Object.freeze([
       Object.freeze({
         label: "Current State",
-        anyOf: Object.freeze(["Current State", "Current Production State"])
+        anyOf: Object.freeze(["Current State", "Current Production State", "Current"])
       }),
       Object.freeze({
         label: "Future State",
-        anyOf: Object.freeze(["Future State", "Upcoming Initiatives"])
+        anyOf: Object.freeze(["Future State", "Upcoming Initiatives", "Future"])
       })
     ]);
 
@@ -47,13 +33,34 @@
       "Carbon"
     ]);
 
+    // Suite names that should NOT be used anywhere in the repository (any level).
+    // Add more names here as the standard evolves.
+    const DISCOURAGED_SUITE_NAMES = Object.freeze([
+      "Smoke",
+      "Regression",
+      "Manual",
+      "Automated"
+    ]);
+
+    // Substrings that should never appear in a suite title (case-insensitive),
+    // e.g. file extensions that indicate a suite was named after a code file.
+    const FORBIDDEN_SUITE_TITLE_SUBSTRINGS = Object.freeze([
+      "spec.ts",
+      "spec.js",
+      "cy.js",
+      "cy.ts",
+      ".cs"
+    ]);
+
     let runtimeConfig = { ...DEFAULTS };
+    let injectedCss = "";
 
     const state = {
       initialized: false,
       buttonMounted: false,
       modalMounted: false,
-      evaluating: false
+      evaluating: false,
+      renderedProjectCode: null
     };
 
     function init(userConfig) {
@@ -81,6 +88,7 @@
           --qrc-banner-bg: #f6fbff;
           --qrc-banner-border: #d7e3ee;
           --qrc-banner-text: #1e3d5a;
+          --qrc-accent: #005ea6;
           --qrc-secondary-bg: #e9f0f7;
           --qrc-secondary-text: #1d3348;
           --qrc-input-bg: #fff;
@@ -88,6 +96,21 @@
           --qrc-th-bg: #eef3f8;
           --qrc-details-bg: #f0f4f8;
           --qrc-details-hover: #e4eaf2;
+          --qrc-status-text: #294560;
+          --qrc-pass-text: #0f7a41;
+          --qrc-fail-text: #b21f1f;
+          --qrc-close-bg: #eef3f8;
+          --qrc-close-text: #5a6b7b;
+          --qrc-close-hover-bg: #d92d3a;
+          --qrc-close-hover-text: #fff;
+          --qrc-pass-solid: #0c7a3d;
+          --qrc-fail-solid: #c62828;
+          --qrc-pass-soft-bg: #e3f5ea;
+          --qrc-pass-soft-text: #0c7a3d;
+          --qrc-pass-soft-border: #b7e0c6;
+          --qrc-fail-soft-bg: #fbe4e4;
+          --qrc-fail-soft-text: #b21f1f;
+          --qrc-fail-soft-border: #f0c2c2;
         }
         @media (prefers-color-scheme: dark) {
           .qrc-overlay {
@@ -99,7 +122,8 @@
             --qrc-score-border: #1e3d5a;
             --qrc-banner-bg: #142034;
             --qrc-banner-border: #1e3550;
-            --qrc-banner-text: #88b4d4;
+            --qrc-banner-text: #a9c8e2;
+            --qrc-accent: #4a90d9;
             --qrc-secondary-bg: #1a2d42;
             --qrc-secondary-text: #90b8d8;
             --qrc-input-bg: #162030;
@@ -107,17 +131,33 @@
             --qrc-th-bg: #162030;
             --qrc-details-bg: #182538;
             --qrc-details-hover: #1e2e44;
+            --qrc-status-text: #90b8d8;
+            --qrc-pass-text: #4ec27e;
+            --qrc-fail-text: #ff7a7a;
+            --qrc-close-bg: #243348;
+            --qrc-close-text: #9fb4c9;
+            --qrc-close-hover-bg: #e2515e;
+            --qrc-close-hover-text: #fff;
+            --qrc-pass-solid: #1c9e5a;
+            --qrc-fail-solid: #d64545;
+            --qrc-pass-soft-bg: #173a2a;
+            --qrc-pass-soft-text: #5fd28e;
+            --qrc-pass-soft-border: #1f5a3c;
+            --qrc-fail-soft-bg: #3a1f24;
+            --qrc-fail-soft-text: #ff8a8a;
+            --qrc-fail-soft-border: #5e2a30;
           }
         }
         .qrc-button {
           position: fixed;
-          right: 24px;
-          bottom: 24px;
+          top: 8px;
+          left: 50%;
+          transform: translateX(-50%);
           z-index: 99999;
           border: 0;
           border-radius: 999px;
-          padding: 10px 16px;
-          background: #005ea6;
+          padding: 6px 14px;
+          background: #e8730c;
           color: #fff;
           font-weight: 700;
           font-size: 13px;
@@ -163,45 +203,63 @@
           font-size: 18px;
         }
         .qrc-close {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
           border: 0;
-          background: transparent;
-          color: var(--qrc-text);
+          border-radius: 8px;
+          background: var(--qrc-close-bg);
+          color: var(--qrc-close-text);
           font-size: 18px;
+          line-height: 1;
           cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+        .qrc-close:hover,
+        .qrc-close:focus-visible {
+          background: var(--qrc-close-hover-bg);
+          color: var(--qrc-close-hover-text);
+        }
+        .qrc-close:focus-visible {
+          outline: 2px solid #4a90d9;
+          outline-offset: 2px;
         }
         .qrc-body {
           padding: 16px;
         }
-        .qrc-banner {
-          border: 1px solid var(--qrc-banner-border);
-          border-radius: 10px;
+        .qrc-intro-text {
+          margin: 0;
+          font-size: 15px;
+          line-height: 1.5;
+          color: var(--qrc-text);
+        }
+        .qrc-project-line {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 14px;
+          padding: 12px 14px;
+          border-left: 4px solid var(--qrc-accent);
+          border-radius: 0 8px 8px 0;
           background: var(--qrc-banner-bg);
-          padding: 12px;
           font-size: 13px;
           color: var(--qrc-banner-text);
         }
-        .qrc-grid {
-          display: grid;
-          grid-template-columns: 1fr;
-          gap: 12px;
-          margin-top: 12px;
-        }
-        .qrc-field {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .qrc-field label {
+        .qrc-project-label {
           font-weight: 600;
-          font-size: 12px;
         }
-        .qrc-field input {
-          border: 1px solid var(--qrc-input-border);
-          border-radius: 8px;
-          padding: 8px 10px;
-          font-size: 13px;
-          background: var(--qrc-input-bg);
+        .qrc-project-code {
+          font-size: 16px;
+          font-weight: 700;
+          letter-spacing: 0.3px;
           color: var(--qrc-text);
+        }
+        .qrc-project-code.unknown {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--qrc-fail-soft-text);
         }
         .qrc-actions {
           display: flex;
@@ -216,7 +274,7 @@
           cursor: pointer;
         }
         .qrc-primary {
-          background: #0c7a3d;
+          background: #e8730c;
           color: #fff;
         }
         .qrc-secondary {
@@ -226,20 +284,69 @@
         .qrc-status {
           margin-top: 12px;
           font-size: 13px;
+          color: var(--qrc-status-text);
         }
-        .qrc-score {
-          margin-top: 16px;
-          padding: 12px;
-          border-radius: 10px;
-          background: var(--qrc-score-bg);
-          border: 1px solid var(--qrc-score-border);
+        .qrc-status.qrc-status-error {
+          color: var(--qrc-fail-text);
+        }
+        .qrc-results-title {
+          margin: 18px 0 0;
+          font-size: 18px;
           font-weight: 700;
+          color: var(--qrc-text);
+        }
+        .qrc-pills {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 10px;
+        }
+        .qrc-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 12px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 600;
+          border: 1px solid transparent;
+        }
+        .qrc-pill.pass {
+          background: var(--qrc-pass-soft-bg);
+          color: var(--qrc-pass-soft-text);
+          border-color: var(--qrc-pass-soft-border);
+        }
+        .qrc-pill.fail {
+          background: var(--qrc-fail-soft-bg);
+          color: var(--qrc-fail-soft-text);
+          border-color: var(--qrc-fail-soft-border);
+        }
+        .qrc-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 3px 10px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .qrc-chip.pass {
+          background: var(--qrc-pass-soft-bg);
+          color: var(--qrc-pass-soft-text);
+        }
+        .qrc-chip.fail {
+          background: var(--qrc-fail-soft-bg);
+          color: var(--qrc-fail-soft-text);
         }
         .qrc-details {
           margin-top: 12px;
           border: 1px solid var(--qrc-table-border);
           border-radius: 8px;
           overflow: hidden;
+        }
+        .qrc-details:first-of-type {
+          margin-top: 18px;
         }
         .qrc-summary {
           cursor: pointer;
@@ -287,15 +394,34 @@
         .qrc-table tr:last-child td {
           border-bottom: 0;
         }
-        .qrc-pass {
-          color: #0f7a41;
-          font-weight: 700;
+        .qrc-case-list-wrap {
+          padding: 10px 12px;
+          border-top: 1px solid var(--qrc-table-border);
         }
-        .qrc-fail {
-          color: #b21f1f;
-          font-weight: 700;
+        .qrc-case-list-title {
+          font-size: 12px;
+          font-weight: 600;
+          margin-bottom: 6px;
+          color: var(--qrc-text);
+        }
+        .qrc-case-list {
+          margin: 0;
+          padding-left: 20px;
+          max-height: 240px;
+          overflow: auto;
+          font-size: 12px;
+          color: var(--qrc-text);
+        }
+        .qrc-case-list li {
+          margin: 2px 0;
+        }
+        .qrc-case-id {
+          color: var(--qrc-status-text);
         }
       `;
+
+      // Keep a copy so the "Open in New Tab" view can reuse the same styles.
+      injectedCss = css;
 
       if (typeof GM_addStyle === "function") {
         GM_addStyle(css);
@@ -315,7 +441,7 @@
       const button = document.createElement("button");
       button.className = "qrc-button";
       button.type = "button";
-      button.textContent = "Check Score";
+      button.textContent = "Check Your Qase Score";
       button.addEventListener("click", openModal);
       document.body.appendChild(button);
 
@@ -362,26 +488,25 @@
         <div class="qrc-modal" role="dialog" aria-modal="true" aria-label="Qase Repo Checker">
           <div class="qrc-head">
             <h2 class="qrc-title">Qase Repo Checker</h2>
-            <button class="qrc-close" type="button" aria-label="Close">X</button>
+            <button class="qrc-close" type="button" aria-label="Close" title="Close">&#10005;</button>
           </div>
           <div class="qrc-body">
-            <div class="qrc-banner">
+            <p class="qrc-intro-text">
               Evaluate your test repository organization against ${escapeHtml(runtimeConfig.standardsName)}.
-            </div>
+            </p>
 
-            <div class="qrc-grid">
-              <div class="qrc-field">
-                <label for="qrc-project">Project Code (from URL: app.qase.io/project/&lt;projectcode&gt;)</label>
-                <input id="qrc-project" type="text" disabled />
-              </div>
+            <div class="qrc-project-line">
+              <span class="qrc-project-label">Project code being evaluated:</span>
+              <span class="qrc-project-code" id="qrc-project">—</span>
             </div>
 
             <div class="qrc-actions">
               <button class="qrc-primary" id="qrc-evaluate" type="button">Check Score</button>
               <button class="qrc-secondary" id="qrc-clear" type="button">Clear Results</button>
+              <button class="qrc-secondary" id="qrc-open-tab" type="button" style="display: none;">Open in New Tab</button>
             </div>
 
-            <div class="qrc-status" id="qrc-status">Ready.</div>
+            <div class="qrc-status" id="qrc-status" style="display: none;"></div>
             <div id="qrc-results"></div>
           </div>
         </div>
@@ -398,12 +523,58 @@
       overlay.querySelector(".qrc-close").addEventListener("click", closeModal);
       overlay.querySelector("#qrc-clear").addEventListener("click", clearResults);
       overlay.querySelector("#qrc-evaluate").addEventListener("click", onEvaluate);
+      overlay.querySelector("#qrc-open-tab").addEventListener("click", openResultsInNewTab);
+    }
+
+    function openResultsInNewTab() {
+      const results = document.querySelector("#qrc-results");
+      const resultsHtml = results ? results.innerHTML.trim() : "";
+
+      if (!resultsHtml) {
+        setStatus("Run a check first, then open the results in a new tab.", true);
+        return;
+      }
+
+      const headingEl = results.querySelector(".qrc-results-title");
+      const pageTitle = headingEl ? headingEl.textContent.trim() : "Qase Repo Checker Results";
+
+      const doc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(pageTitle)}</title>
+<style>${injectedCss}</style>
+</head>
+<body class="qrc-overlay" style="position: static; display: block; background: var(--qrc-bg); padding: 24px;">
+  <div class="qrc-modal" style="max-height: none; width: min(840px, 100%); margin: 0 auto;">
+    <div class="qrc-body">${resultsHtml}</div>
+  </div>
+</body>
+</html>`;
+
+      const blob = new Blob([doc], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const newTab = window.open(url, "_blank");
+
+      if (!newTab) {
+        setStatus("Popup blocked — allow popups for app.qase.io to open results in a new tab.", true);
+      }
+
+      // Give the new tab time to load before releasing the object URL.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
     function hydrateFormDefaults() {
-      const projectInput = document.querySelector("#qrc-project");
-      projectInput.value = detectQaseProjectCode() || "Unknown";
-      setStatus("Ready.");
+      const projectEl = document.querySelector("#qrc-project");
+      const code = detectQaseProjectCode();
+      projectEl.textContent = code || "Not detected — open a project page";
+      projectEl.classList.toggle("unknown", !code);
+
+      // Drop stale results when the modal is opened on a different project.
+      if (code !== state.renderedProjectCode) {
+        clearResults();
+      }
     }
 
     function clearResults() {
@@ -411,7 +582,16 @@
       if (results) {
         results.innerHTML = "";
       }
-      setStatus("Cleared.");
+      state.renderedProjectCode = null;
+      setOpenTabVisible(false);
+      setStatus("");
+    }
+
+    function setOpenTabVisible(visible) {
+      const button = document.querySelector("#qrc-open-tab");
+      if (button) {
+        button.style.display = visible ? "" : "none";
+      }
     }
 
     async function onEvaluate() {
@@ -423,10 +603,10 @@
       setEvaluateButtonBusy(true);
 
       try {
-        const projectCode = ((document.querySelector("#qrc-project").value || "").trim() || "").toUpperCase();
+        const projectCode = (detectQaseProjectCode() || "").toUpperCase();
         const token = String(runtimeConfig.qaseApiToken || "").trim();
 
-        if (!projectCode || projectCode === "UNKNOWN") {
+        if (!projectCode) {
           setStatus("Cannot detect project code from URL. Open app.qase.io/project/<projectcode>.", true);
           return;
         }
@@ -441,10 +621,9 @@
 
         const evaluation = await evaluateProjectWithQaseApis(projectCode, token);
         renderEvaluation(evaluation, projectCode);
-
-        setStatus(
-          `Evaluation complete (${evaluation.overallPassed ? "PASS" : "FAIL"} overall; suites: ${evaluation.suiteCheck.passed ? "PASS" : "FAIL"}, test plans: ${evaluation.planCheck.passed ? "PASS" : "FAIL"}, environments: ${evaluation.environmentCheck.passed ? "PASS" : "FAIL"}).`
-        );
+        state.renderedProjectCode = projectCode;
+        setOpenTabVisible(true);
+        setStatus("");
       } catch (error) {
         setStatus(`Error: ${error.message}`, true);
       } finally {
@@ -454,16 +633,21 @@
     }
 
     async function evaluateProjectWithQaseApis(projectCode, token) {
+      const projectFetch = await fetchProject(projectCode, token);
       const suiteFetch = await fetchAllSuites(projectCode, token);
       const planFetch = await fetchAllPlans(projectCode, token);
       const environmentFetch = await fetchAllEnvironments(projectCode, token);
+      const caseFetch = await fetchAllCases(projectCode, token);
+      const projectTitle = projectFetch.title;
       const suiteResponse = suiteFetch.lastResponse;
       const planResponse = planFetch.lastResponse;
       const environmentResponse = environmentFetch.lastResponse;
+      const caseResponse = caseFetch.lastResponse;
 
       const suites = suiteFetch.suites;
       const plans = planFetch.plans;
       const environments = environmentFetch.environments;
+      const cases = caseFetch.cases;
       const environmentNames = uniqueStrings(environments.map((environment) => environment.title));
       const topLevelSuites = uniqueStrings(
         suites
@@ -475,12 +659,41 @@
       const missingRules = requiredRules.filter((rule) => !hasTopLevelMatch(topLevelSuites, rule));
       const missing = missingRules.map((rule) => rule.label);
       const required = requiredRules.map((rule) => rule.label);
-      const requirementResults = requiredRules.map((rule) => ({
+      const requiredRuleResults = requiredRules.map((rule) => ({
         label: rule.label,
         passed: hasTopLevelMatch(topLevelSuites, rule),
         matchedTitle: getTopLevelMatchName(topLevelSuites, rule)
       }));
-      const passed = requiredRules.every((rule) => hasTopLevelMatch(topLevelSuites, rule));
+
+      const discouragedSuiteSet = new Set(DISCOURAGED_SUITE_NAMES.map(normalizeName));
+      const discouragedSuitesFound = uniqueStrings(suites.map((suite) => suite.name)).filter((name) =>
+        discouragedSuiteSet.has(normalizeName(name))
+      );
+      const discouragedSuiteRule = {
+        label: `No suites named: ${DISCOURAGED_SUITE_NAMES.join(", ")}`,
+        passed: discouragedSuitesFound.length === 0,
+        details:
+          discouragedSuitesFound.length === 0
+            ? "No discouraged suite names found."
+            : `Discouraged suite name(s) found: ${discouragedSuitesFound.join(", ")}`
+      };
+
+      const forbiddenSubstrings = FORBIDDEN_SUITE_TITLE_SUBSTRINGS.map((substring) => substring.toLowerCase());
+      const suitesWithForbiddenSubstring = uniqueStrings(suites.map((suite) => suite.name)).filter((name) => {
+        const lowerName = name.toLowerCase();
+        return forbiddenSubstrings.some((substring) => lowerName.includes(substring));
+      });
+      const forbiddenSubstringRule = {
+        label: `No suite titles containing: ${FORBIDDEN_SUITE_TITLE_SUBSTRINGS.join(", ")}`,
+        passed: suitesWithForbiddenSubstring.length === 0,
+        details:
+          suitesWithForbiddenSubstring.length === 0
+            ? "No suite titles contain forbidden text."
+            : `Suite(s) with forbidden text: ${suitesWithForbiddenSubstring.join(", ")}`
+      };
+
+      const requirementResults = [...requiredRuleResults, discouragedSuiteRule, forbiddenSubstringRule];
+      const passed = requirementResults.every((result) => result.passed);
       const zeroCasePlans = plans.filter((plan) => plan.casesCount === 0);
       const planRequirementResults = [
         {
@@ -505,9 +718,23 @@
         .map((result) => result.label);
       const environmentPassed = environmentRequirementResults.every((result) => result.passed);
 
+      const orphanCases = cases.filter((testCase) => testCase.suiteId == null);
+      const caseRequirementResults = [
+        {
+          label: "No test cases without a suite (null suite_id)",
+          passed: orphanCases.length === 0,
+          details:
+            orphanCases.length === 0
+              ? `All ${cases.length} test case(s) are assigned to a suite.`
+              : `${orphanCases.length} of ${cases.length} test case(s) have a null suite_id (listed below).`
+        }
+      ];
+      const casePassed = caseRequirementResults.every((result) => result.passed);
+
       return {
-        endpoints: [...suiteFetch.responses, ...planFetch.responses, ...environmentFetch.responses],
-        overallPassed: passed && planPassed && environmentPassed,
+        endpoints: [projectFetch.response, ...suiteFetch.responses, ...planFetch.responses, ...environmentFetch.responses, ...caseFetch.responses],
+        projectTitle,
+        overallPassed: passed && planPassed && environmentPassed && casePassed,
         suiteCheck: {
           endpoint: suiteResponse ? suiteResponse.url : `${runtimeConfig.qaseApiBase}/suite/${encodeURIComponent(projectCode)}`,
           topLevelSuites,
@@ -532,6 +759,13 @@
           missing: missingEnvironments,
           requirementResults: environmentRequirementResults,
           passed: environmentPassed
+        },
+        caseCheck: {
+          endpoint: caseResponse ? caseResponse.url : `${runtimeConfig.qaseApiBase}/case/${encodeURIComponent(projectCode)}`,
+          totalCases: cases.length,
+          orphanCases,
+          requirementResults: caseRequirementResults,
+          passed: casePassed
         }
       };
     }
@@ -737,6 +971,64 @@
       };
     }
 
+    async function fetchProject(projectCode, token) {
+      const url = `${runtimeConfig.qaseApiBase}/project/${encodeURIComponent(projectCode)}`;
+      const response = await requestQase(url, token);
+      const result = response.payload?.result || response.payload?.data || {};
+      const title = response.ok ? String(result.title || result.name || "").trim() : "";
+
+      return {
+        response,
+        title,
+        lastResponse: response
+      };
+    }
+
+    async function fetchAllCases(projectCode, token) {
+      // Case repositories can hold thousands of records, so page through them
+      // sequentially (100 per request) rather than asking for everything at once.
+      const limit = 100;
+      let offset = 0;
+      const maxPages = 200;
+      const responses = [];
+      const cases = [];
+      let lastResponse = null;
+
+      for (let page = 0; page < maxPages; page += 1) {
+        const url = `${runtimeConfig.qaseApiBase}/case/${encodeURIComponent(projectCode)}?limit=${limit}&offset=${offset}`;
+        const response = await requestQase(url, token);
+        lastResponse = response;
+
+        if (!response.ok) {
+          // Only retain failed responses; successful payloads are large and we
+          // already keep the extracted cases, so there is no need to hold them.
+          responses.push(response);
+          break;
+        }
+
+        const pageCases = extractQaseCaseEntities(response.payload);
+        cases.push(...pageCases);
+
+        const total = Number(
+          response.payload?.result?.total ?? response.payload?.result?.filtered ?? 0
+        );
+        if (pageCases.length < limit) {
+          break;
+        }
+        if (total > 0 && cases.length >= total) {
+          break;
+        }
+
+        offset += limit;
+      }
+
+      return {
+        responses,
+        cases,
+        lastResponse
+      };
+    }
+
     function getRequiredSuiteRules() {
       return REQUIRED_TOP_LEVEL_SUITE_RULES.map((entry) => {
         if (typeof entry === "string") {
@@ -915,6 +1207,31 @@
         .filter((entry) => !!entry.title);
     }
 
+    function extractQaseCaseEntities(payload) {
+      const rawEntities =
+        payload?.result?.entities ||
+        payload?.result?.cases ||
+        payload?.result ||
+        payload?.data?.entities ||
+        payload?.data?.cases ||
+        payload?.data ||
+        [];
+      const list = Array.isArray(rawEntities) ? rawEntities : [];
+
+      // Keep only the fields the rubric needs so large repositories stay light.
+      return list.map((item) => {
+        const id = item?.id ?? item?.case_id ?? item?.caseId ?? null;
+        const title = String(item?.title || item?.name || "").trim();
+        const rawSuiteId = item?.suite_id ?? item?.suiteId ?? null;
+
+        return {
+          id,
+          title,
+          suiteId: rawSuiteId == null ? null : rawSuiteId
+        };
+      });
+    }
+
     function isTopLevelSuite(suite) {
       if (!suite || typeof suite !== "object") {
         return false;
@@ -1001,8 +1318,10 @@
         return;
       }
 
-      statusEl.textContent = message;
-      statusEl.style.color = isError ? "#b21f1f" : "#294560";
+      const text = message || "";
+      statusEl.textContent = text;
+      statusEl.classList.toggle("qrc-status-error", !!isError);
+      statusEl.style.display = text ? "" : "none";
     }
 
     function setEvaluateButtonBusy(isBusy) {
@@ -1033,39 +1352,26 @@
         })
         .join("");
 
-      const suiteRows = evaluation.suiteCheck.topLevelSuites
-        .map((suiteName) => {
-          const isRequired = evaluation.suiteCheck.required.some(
-            (requiredName) => normalizeName(requiredName) === normalizeName(suiteName)
-          );
-          return `
-            <tr>
-              <td>${escapeHtml(suiteName)}</td>
-              <td>${isRequired ? "Required" : "Optional"}</td>
-            </tr>
-          `;
-        })
-        .join("");
-
-      const missingText = evaluation.suiteCheck.missing.length > 0 ? evaluation.suiteCheck.missing.join(", ") : "None";
-      const missingEnvironmentText = evaluation.environmentCheck.missing.length > 0
-        ? evaluation.environmentCheck.missing.join(", ")
-        : "None";
       const requirementRows = (evaluation.suiteCheck.requirementResults || [])
         .map((result) => {
-          const normalizedLabel = normalizeName(result.label);
-          const normalizedMatched = normalizeName(result.matchedTitle || "");
-          const usedSubstitution = !!result.passed && !!result.matchedTitle && normalizedMatched !== normalizedLabel;
-          const detailText = !result.passed
-            ? "Not found"
-            : usedSubstitution
-              ? `Accepted substitution used: ${result.matchedTitle}`
-              : `Matched required title: ${result.label}`;
+          let detailText;
+          if (result.details != null) {
+            detailText = result.details;
+          } else {
+            const normalizedLabel = normalizeName(result.label);
+            const normalizedMatched = normalizeName(result.matchedTitle || "");
+            const usedSubstitution = !!result.passed && !!result.matchedTitle && normalizedMatched !== normalizedLabel;
+            detailText = !result.passed
+              ? "Not found"
+              : usedSubstitution
+                ? `Accepted substitution used: ${result.matchedTitle}`
+                : `Matched required title: ${result.label}`;
+          }
 
           return `
             <tr>
               <td>${escapeHtml(result.label)}</td>
-              <td class="${result.passed ? "qrc-pass" : "qrc-fail"}">${result.passed ? "PASS" : "FAIL"}</td>
+              <td>${statusChip(result.passed)}</td>
               <td>${escapeHtml(detailText)}</td>
             </tr>
           `;
@@ -1077,20 +1383,8 @@
           return `
             <tr>
               <td>${escapeHtml(result.label)}</td>
-              <td class="${result.passed ? "qrc-pass" : "qrc-fail"}">${result.passed ? "PASS" : "FAIL"}</td>
+              <td>${statusChip(result.passed)}</td>
               <td>${escapeHtml(result.details || "")}</td>
-            </tr>
-          `;
-        })
-        .join("");
-
-      const planRows = (evaluation.planCheck.plans || [])
-        .map((plan) => {
-          return `
-            <tr>
-              <td>${escapeHtml(plan.title)}</td>
-              <td>${escapeHtml(String(plan.casesCount))}</td>
-              <td class="${plan.casesCount === 0 ? "qrc-fail" : "qrc-pass"}">${plan.casesCount === 0 ? "FAIL" : "PASS"}</td>
             </tr>
           `;
         })
@@ -1101,39 +1395,56 @@
           return `
             <tr>
               <td>${escapeHtml(result.label)}</td>
-              <td class="${result.passed ? "qrc-pass" : "qrc-fail"}">${result.passed ? "PASS" : "FAIL"}</td>
+              <td>${statusChip(result.passed)}</td>
               <td>${escapeHtml(result.details || "")}</td>
             </tr>
           `;
         })
         .join("");
 
-      const environmentRows = (evaluation.environmentCheck.environments || [])
-        .map((environment) => {
+      const caseRequirementRows = (evaluation.caseCheck.requirementResults || [])
+        .map((result) => {
           return `
             <tr>
-              <td>${escapeHtml(environment.title)}</td>
-              <td>${escapeHtml(environment.slug || "-")}</td>
-              <td>${escapeHtml(environment.type || "-")}</td>
-              <td>${escapeHtml(environment.host || "-")}</td>
+              <td>${escapeHtml(result.label)}</td>
+              <td>${statusChip(result.passed)}</td>
+              <td>${escapeHtml(result.details || "")}</td>
             </tr>
           `;
         })
         .join("");
 
+      const orphanCases = evaluation.caseCheck.orphanCases || [];
+      const orphanListBlock = orphanCases.length
+        ? `
+          <div class="qrc-case-list-wrap">
+            <div class="qrc-case-list-title">Test cases with a null suite_id (${orphanCases.length})</div>
+            <ul class="qrc-case-list">
+              ${orphanCases
+                .map((testCase) => {
+                  const label = testCase.title || `Case #${testCase.id}`;
+                  const idSuffix = testCase.id != null ? ` <span class="qrc-case-id">#${escapeHtml(String(testCase.id))}</span>` : "";
+                  return `<li>${escapeHtml(label)}${idSuffix}</li>`;
+                })
+                .join("")}
+            </ul>
+          </div>
+        `
+        : "";
+
+      const resultsHeading = `${evaluation.projectTitle || projectCode} Results`;
+
       results.innerHTML = `
-        <div class="qrc-score">
-          Project: ${escapeHtml(projectCode)} | Overall: <span class="${evaluation.overallPassed ? "qrc-pass" : "qrc-fail"}">${evaluation.overallPassed ? "PASS" : "FAIL"}</span>
-          <div>Required Suite Check: <span class="${evaluation.suiteCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.suiteCheck.passed ? "PASS" : "FAIL"}</span></div>
-          <div>Test Plan Check: <span class="${evaluation.planCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.planCheck.passed ? "PASS" : "FAIL"}</span></div>
-          <div>Environment Check: <span class="${evaluation.environmentCheck.passed ? "qrc-pass" : "qrc-fail"}">${evaluation.environmentCheck.passed ? "PASS" : "FAIL"}</span></div>
-          <div>Required Suites (position 1–2): ${escapeHtml(evaluation.suiteCheck.required.join(", "))}</div>
-          <div>Missing Suites: ${escapeHtml(missingText)}</div>
-          <div>Required Environments: ${escapeHtml(evaluation.environmentCheck.required.join(", "))}</div>
-          <div>Missing Environments: ${escapeHtml(missingEnvironmentText)}</div>
+        <h3 class="qrc-results-title">${escapeHtml(resultsHeading)}</h3>
+
+        <div class="qrc-pills">
+          <span class="qrc-pill ${evaluation.suiteCheck.passed ? "pass" : "fail"}">Suites ${evaluation.suiteCheck.passed ? "✓" : "✕"}</span>
+          <span class="qrc-pill ${evaluation.planCheck.passed ? "pass" : "fail"}">Test Plans ${evaluation.planCheck.passed ? "✓" : "✕"}</span>
+          <span class="qrc-pill ${evaluation.environmentCheck.passed ? "pass" : "fail"}">Environments ${evaluation.environmentCheck.passed ? "✓" : "✕"}</span>
+          <span class="qrc-pill ${evaluation.caseCheck.passed ? "pass" : "fail"}">Test Cases ${evaluation.caseCheck.passed ? "✓" : "✕"}</span>
         </div>
 
-        <details class="qrc-details">
+        <details class="qrc-details" ${evaluation.suiteCheck.passed ? "" : "open"}>
           <summary class="qrc-summary">Suite Rules</summary>
           <table class="qrc-table">
             <thead>
@@ -1149,7 +1460,7 @@
           </table>
         </details>
 
-        <details class="qrc-details">
+        <details class="qrc-details" ${evaluation.planCheck.passed ? "" : "open"}>
           <summary class="qrc-summary">Test Plan Rules</summary>
           <table class="qrc-table">
             <thead>
@@ -1165,23 +1476,7 @@
           </table>
         </details>
 
-        <details class="qrc-details">
-          <summary class="qrc-summary">Test Plans</summary>
-          <table class="qrc-table">
-            <thead>
-              <tr>
-                <th>Test Plan</th>
-                <th>cases_count</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${planRows || '<tr><td colspan="3">No test plans returned by plan endpoint.</td></tr>'}
-            </tbody>
-          </table>
-        </details>
-
-        <details class="qrc-details">
+        <details class="qrc-details" ${evaluation.environmentCheck.passed ? "" : "open"}>
           <summary class="qrc-summary">Environment Rules</summary>
           <table class="qrc-table">
             <thead>
@@ -1197,36 +1492,21 @@
           </table>
         </details>
 
-        <details class="qrc-details">
-          <summary class="qrc-summary">Environments</summary>
+        <details class="qrc-details" ${evaluation.caseCheck.passed ? "" : "open"}>
+          <summary class="qrc-summary">Test Case Rules</summary>
           <table class="qrc-table">
             <thead>
               <tr>
-                <th>Environment</th>
-                <th>Slug</th>
-                <th>Type</th>
-                <th>Host</th>
+                <th>Test Case Rule</th>
+                <th>Status</th>
+                <th>Details</th>
               </tr>
             </thead>
             <tbody>
-              ${environmentRows || '<tr><td colspan="4">No environments returned by environment endpoint.</td></tr>'}
+              ${caseRequirementRows}
             </tbody>
           </table>
-        </details>
-
-        <details class="qrc-details">
-          <summary class="qrc-summary">Suites (position 1–2)</summary>
-          <table class="qrc-table">
-            <thead>
-              <tr>
-                <th>Suite</th>
-                <th>Classification</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${suiteRows || '<tr><td colspan="2">No suites at position 1 or 2 found.</td></tr>'}
-            </tbody>
-          </table>
+          ${orphanListBlock}
         </details>
 
         ${errorRows ? `
@@ -1256,6 +1536,10 @@
       return "";
     }
 
+    function statusChip(passed) {
+      return `<span class="qrc-chip ${passed ? "pass" : "fail"}">${passed ? "✓ PASS" : "✕ FAIL"}</span>`;
+    }
+
     function escapeHtml(value) {
       return String(value)
         .replace(/&/g, "&amp;")
@@ -1269,6 +1553,4 @@
       init
     };
   })();
-
-  QaseRepoCheckerCore.init(CONFIG);
-})();
+})(typeof window !== "undefined" ? window : this);

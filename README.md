@@ -14,20 +14,20 @@ This script adds a **Check Score** button on Qase pages and validates top-level 
 
 ## File Layout
 
-- `tampermonkey/qase-repo-rubric.user.js`: Stable bootstrap/loader script.
-- `tampermonkey/qase-repo-rubric.core.js`: Main logic file.
+- `tampermonkey/qase-scorecard.user.js`: Stable bootstrap/loader script.
+- `tampermonkey/qase-scorecard.core.js`: Main logic file.
 
 ## Why Split Bootstrap + Core
 
-The loader script stays mostly unchanged. You can update logic in `qase-repo-rubric.core.js` and publish that file without editing the installed userscript each time.
+The loader script stays mostly unchanged. You can update logic in `qase-scorecard.core.js` and publish that file without editing the installed userscript each time.
 
 ## Setup
 
 1. Install Tampermonkey.
-2. Install `tampermonkey/qase-repo-rubric.user.js` into Tampermonkey.
-3. In `tampermonkey/qase-repo-rubric.user.js`, set:
+2. Install `tampermonkey/qase-scorecard.user.js` into Tampermonkey.
+3. In `tampermonkey/qase-scorecard.user.js`, set:
    - `CONFIG.qaseApiToken`
-   - `CONFIG.coreLogicUrl` (URL where `qase-repo-rubric.core.js` is hosted)
+   - `CONFIG.coreLogicUrl` (URL where `qase-scorecard.core.js` is hosted)
 4. Open a Qase project page and click **Check Score**.
 
 ## Notes
