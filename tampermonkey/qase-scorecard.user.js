@@ -16,7 +16,7 @@
 
   const CONFIG = {
     qaseApiBase: "https://api.qase.io/v1",
-    qaseApiToken: "eaa897371f26aad0275bec657897d5ec3cba408e6db3457901bd481d64a59181"
+    qaseApiToken: ""
   };
 
   // ----------------------------------------------------
