@@ -15,7 +15,7 @@
     const REQUIRED_TOP_LEVEL_SUITE_RULES = Object.freeze([
       Object.freeze({
         label: "Current State",
-        anyOf: Object.freeze(["Current State", "Current Production State", "Current"])
+        anyOf: Object.freeze(["Current State", "Current Production State", "Current", "Upcoming Features"])
       }),
       Object.freeze({
         label: "Future State",
@@ -39,7 +39,10 @@
       "Smoke",
       "Regression",
       "Manual",
-      "Automated"
+      "Automated",
+      "chromium",
+      "Cypress",
+      "Playwright"
     ]);
 
     // Substrings that should never appear in a suite title (case-insensitive),
@@ -49,7 +52,9 @@
       "spec.js",
       "cy.js",
       "cy.ts",
-      ".cs"
+      ".cs",
+      "pw.ts",
+      "pw.js"
     ]);
 
     let runtimeConfig = { ...DEFAULTS };
@@ -492,7 +497,7 @@
           </div>
           <div class="qrc-body">
             <p class="qrc-intro-text">
-              Evaluate your test repository organization against ${escapeHtml(runtimeConfig.standardsName)}.
+              Evaluate your test repository organization against our standards}.
             </p>
 
             <div class="qrc-project-line">
@@ -634,6 +639,19 @@
 
     async function evaluateProjectWithQaseApis(projectCode, token) {
       const projectFetch = await fetchProject(projectCode, token);
+
+      // Fail fast on an auth error so a bad/expired token surfaces as a clear
+      // message instead of silently producing an empty (misleading) scorecard.
+      const projectResponse = projectFetch.response;
+      if (!projectResponse.ok) {
+        if (projectResponse.status === 401 || projectResponse.status === 403) {
+          throw new Error(
+            `Qase API rejected the token (HTTP ${projectResponse.status}). Check CONFIG.qaseApiToken.`
+          );
+        }
+        throw new Error(projectResponse.error || `Qase API request failed (HTTP ${projectResponse.status}).`);
+      }
+
       const suiteFetch = await fetchAllSuites(projectCode, token);
       const planFetch = await fetchAllPlans(projectCode, token);
       const environmentFetch = await fetchAllEnvironments(projectCode, token);
