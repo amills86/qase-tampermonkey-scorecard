@@ -57,6 +57,15 @@
       "pw.js"
     ]);
 
+    // Test case titles should describe behavior, not reference a Jira ticket.
+    // Matches any Jira-style key: an uppercase project prefix + dash + number
+    // (e.g. PDR-1234, CM-567, ABC-89). Global flag so we can list every match.
+    const JIRA_TICKET_TITLE_PATTERN = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+
+    // A healthy project should have executed test runs recently. Runs started
+    // within this many days satisfy the recency check.
+    const RUN_RECENCY_DAYS = 14;
+
     let runtimeConfig = { ...DEFAULTS };
     let injectedCss = "";
 
@@ -423,6 +432,14 @@
         .qrc-case-id {
           color: var(--qrc-status-text);
         }
+        .qrc-link {
+          color: var(--qrc-accent);
+          text-decoration: none;
+        }
+        .qrc-link:hover,
+        .qrc-link:focus-visible {
+          text-decoration: underline;
+        }
       `;
 
       // Keep a copy so the "Open in New Tab" view can reuse the same styles.
@@ -497,7 +514,7 @@
           </div>
           <div class="qrc-body">
             <p class="qrc-intro-text">
-              Evaluate your test repository organization against our standards}.
+              Evaluate your test repository organization against our standards.
             </p>
 
             <div class="qrc-project-line">
@@ -652,20 +669,26 @@
         throw new Error(projectResponse.error || `Qase API request failed (HTTP ${projectResponse.status}).`);
       }
 
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const runWindowFromSeconds = nowSeconds - RUN_RECENCY_DAYS * 24 * 60 * 60;
+
       const suiteFetch = await fetchAllSuites(projectCode, token);
       const planFetch = await fetchAllPlans(projectCode, token);
       const environmentFetch = await fetchAllEnvironments(projectCode, token);
       const caseFetch = await fetchAllCases(projectCode, token);
+      const runFetch = await fetchRecentRuns(projectCode, token, runWindowFromSeconds, nowSeconds);
       const projectTitle = projectFetch.title;
       const suiteResponse = suiteFetch.lastResponse;
       const planResponse = planFetch.lastResponse;
       const environmentResponse = environmentFetch.lastResponse;
       const caseResponse = caseFetch.lastResponse;
+      const runResponse = runFetch.lastResponse;
 
       const suites = suiteFetch.suites;
       const plans = planFetch.plans;
       const environments = environmentFetch.environments;
       const cases = caseFetch.cases;
+      const recentRuns = runFetch.runs;
       const environmentNames = uniqueStrings(environments.map((environment) => environment.title));
       const topLevelSuites = uniqueStrings(
         suites
@@ -684,9 +707,8 @@
       }));
 
       const discouragedSuiteSet = new Set(DISCOURAGED_SUITE_NAMES.map(normalizeName));
-      const discouragedSuitesFound = uniqueStrings(suites.map((suite) => suite.name)).filter((name) =>
-        discouragedSuiteSet.has(normalizeName(name))
-      );
+      const discouragedSuiteObjs = suites.filter((suite) => discouragedSuiteSet.has(normalizeName(suite.name)));
+      const discouragedSuitesFound = uniqueStrings(discouragedSuiteObjs.map((suite) => suite.name));
       const discouragedSuiteRule = {
         label: `No suites named: ${DISCOURAGED_SUITE_NAMES.join(", ")}`,
         passed: discouragedSuitesFound.length === 0,
@@ -697,10 +719,11 @@
       };
 
       const forbiddenSubstrings = FORBIDDEN_SUITE_TITLE_SUBSTRINGS.map((substring) => substring.toLowerCase());
-      const suitesWithForbiddenSubstring = uniqueStrings(suites.map((suite) => suite.name)).filter((name) => {
-        const lowerName = name.toLowerCase();
+      const forbiddenSuiteObjs = suites.filter((suite) => {
+        const lowerName = suite.name.toLowerCase();
         return forbiddenSubstrings.some((substring) => lowerName.includes(substring));
       });
+      const suitesWithForbiddenSubstring = uniqueStrings(forbiddenSuiteObjs.map((suite) => suite.name));
       const forbiddenSubstringRule = {
         label: `No suite titles containing: ${FORBIDDEN_SUITE_TITLE_SUBSTRINGS.join(", ")}`,
         passed: suitesWithForbiddenSubstring.length === 0,
@@ -709,6 +732,19 @@
             ? "No suite titles contain forbidden text."
             : `Suite(s) with forbidden text: ${suitesWithForbiddenSubstring.join(", ")}`
       };
+
+      // Unique list of suites that broke either suite rule, kept as objects so the
+      // UI can link each one back to Qase (by id when available).
+      const flaggedSuites = [];
+      const seenFlaggedSuiteKeys = new Set();
+      for (const suite of [...discouragedSuiteObjs, ...forbiddenSuiteObjs]) {
+        const key = suite.id != null ? `id:${suite.id}` : `name:${normalizeName(suite.name)}`;
+        if (seenFlaggedSuiteKeys.has(key)) {
+          continue;
+        }
+        seenFlaggedSuiteKeys.add(key);
+        flaggedSuites.push(suite);
+      }
 
       const requirementResults = [...requiredRuleResults, discouragedSuiteRule, forbiddenSubstringRule];
       const passed = requirementResults.every((result) => result.passed);
@@ -737,6 +773,14 @@
       const environmentPassed = environmentRequirementResults.every((result) => result.passed);
 
       const orphanCases = cases.filter((testCase) => testCase.suiteId == null);
+
+      const casesWithJiraTicket = cases
+        .map((testCase) => {
+          const tickets = uniqueStrings(testCase.title.match(JIRA_TICKET_TITLE_PATTERN) || []);
+          return tickets.length ? { ...testCase, tickets } : null;
+        })
+        .filter(Boolean);
+
       const caseRequirementResults = [
         {
           label: "No test cases without a suite (null suite_id)",
@@ -745,20 +789,41 @@
             orphanCases.length === 0
               ? `All ${cases.length} test case(s) are assigned to a suite.`
               : `${orphanCases.length} of ${cases.length} test case(s) have a null suite_id (listed below).`
+        },
+        {
+          label: "No test case titles containing a Jira or PDR ticket number",
+          passed: casesWithJiraTicket.length === 0,
+          details:
+            casesWithJiraTicket.length === 0
+              ? `No test case titles reference a Jira ticket.`
+              : `${casesWithJiraTicket.length} of ${cases.length} test case(s) reference a Jira ticket in the title (listed below).`
         }
       ];
       const casePassed = caseRequirementResults.every((result) => result.passed);
 
+      const runRequirementResults = [
+        {
+          label: `At least 1 test run in the last ${RUN_RECENCY_DAYS} days`,
+          passed: recentRuns.length > 0,
+          details:
+            recentRuns.length > 0
+              ? `${recentRuns.length} test run(s) started in the last ${RUN_RECENCY_DAYS} days.`
+              : `No test runs started in the last ${RUN_RECENCY_DAYS} days.`
+        }
+      ];
+      const runPassed = runRequirementResults.every((result) => result.passed);
+
       return {
-        endpoints: [projectFetch.response, ...suiteFetch.responses, ...planFetch.responses, ...environmentFetch.responses, ...caseFetch.responses],
+        endpoints: [projectFetch.response, ...suiteFetch.responses, ...planFetch.responses, ...environmentFetch.responses, ...caseFetch.responses, ...runFetch.responses],
         projectTitle,
-        overallPassed: passed && planPassed && environmentPassed && casePassed,
+        overallPassed: passed && planPassed && environmentPassed && casePassed && runPassed,
         suiteCheck: {
           endpoint: suiteResponse ? suiteResponse.url : `${runtimeConfig.qaseApiBase}/suite/${encodeURIComponent(projectCode)}`,
           topLevelSuites,
           required,
           requiredRules,
           requirementResults,
+          flaggedSuites,
           missing,
           passed
         },
@@ -782,8 +847,16 @@
           endpoint: caseResponse ? caseResponse.url : `${runtimeConfig.qaseApiBase}/case/${encodeURIComponent(projectCode)}`,
           totalCases: cases.length,
           orphanCases,
+          casesWithJiraTicket,
           requirementResults: caseRequirementResults,
           passed: casePassed
+        },
+        runCheck: {
+          endpoint: runResponse ? runResponse.url : `${runtimeConfig.qaseApiBase}/run/${encodeURIComponent(projectCode)}`,
+          recencyDays: RUN_RECENCY_DAYS,
+          recentRunCount: recentRuns.length,
+          requirementResults: runRequirementResults,
+          passed: runPassed
         }
       };
     }
@@ -1047,6 +1120,27 @@
       };
     }
 
+    async function fetchRecentRuns(projectCode, token, fromSeconds, toSeconds) {
+      // Qase filters runs by start time via filters[from_start_time]/[to_start_time],
+      // both Unix timestamps (int64 seconds). We only need to know a run exists in
+      // the window, so a single page is enough.
+      const params = [
+        "limit=100",
+        "offset=0",
+        `filters[from_start_time]=${Math.floor(fromSeconds)}`,
+        `filters[to_start_time]=${Math.floor(toSeconds)}`
+      ].join("&");
+      const url = `${runtimeConfig.qaseApiBase}/run/${encodeURIComponent(projectCode)}?${params}`;
+      const response = await requestQase(url, token);
+      const runs = response.ok ? extractQaseRunEntities(response.payload) : [];
+
+      return {
+        responses: [response],
+        runs,
+        lastResponse: response
+      };
+    }
+
     function getRequiredSuiteRules() {
       return REQUIRED_TOP_LEVEL_SUITE_RULES.map((entry) => {
         if (typeof entry === "string") {
@@ -1158,11 +1252,13 @@
       return list
         .map((item) => {
           const name = item.title || item.name || "";
+          const id = item.id ?? item.suite_id ?? item.suiteId ?? null;
           const parent = item.parent_id ?? item.parentId ?? item.parent ?? item.parent_suite_id ?? item.parentSuiteId;
           const level = item.depth ?? item.level;
           const isRoot = item.is_root ?? item.isRoot;
           const position = item.position ?? null;
           return {
+            id: id == null ? null : id,
             name: String(name).trim(),
             parent,
             level,
@@ -1246,6 +1342,30 @@
           id,
           title,
           suiteId: rawSuiteId == null ? null : rawSuiteId
+        };
+      });
+    }
+
+    function extractQaseRunEntities(payload) {
+      const rawEntities =
+        payload?.result?.entities ||
+        payload?.result?.runs ||
+        payload?.result ||
+        payload?.data?.entities ||
+        payload?.data?.runs ||
+        payload?.data ||
+        [];
+      const list = Array.isArray(rawEntities) ? rawEntities : [];
+
+      return list.map((item) => {
+        const id = item?.id ?? item?.run_id ?? item?.runId ?? null;
+        const title = String(item?.title || item?.name || "").trim();
+        const startTimeRaw = item?.start_time ?? item?.startTime ?? null;
+
+        return {
+          id,
+          title,
+          startTime: startTimeRaw == null ? "" : String(startTimeRaw).trim()
         };
       });
     }
@@ -1432,17 +1552,74 @@
         })
         .join("");
 
+      const runRequirementRows = ((evaluation.runCheck && evaluation.runCheck.requirementResults) || [])
+        .map((result) => {
+          return `
+            <tr>
+              <td>${escapeHtml(result.label)}</td>
+              <td>${statusChip(result.passed)}</td>
+              <td>${escapeHtml(result.details || "")}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      // Render a case as a list item, linking to Qase in a new tab when we have an id.
+      const renderCaseItem = (testCase, extraSuffix) => {
+        const label = testCase.title || `Case #${testCase.id}`;
+        const suffix = extraSuffix || "";
+        if (testCase.id != null) {
+          const href = qaseCaseUrl(projectCode, testCase.id);
+          return `<li><a class="qrc-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)} <span class="qrc-case-id">${escapeHtml(projectCode)}-${escapeHtml(String(testCase.id))}</span></a>${suffix}</li>`;
+        }
+        return `<li>${escapeHtml(label)}${suffix}</li>`;
+      };
+
       const orphanCases = evaluation.caseCheck.orphanCases || [];
       const orphanListBlock = orphanCases.length
         ? `
           <div class="qrc-case-list-wrap">
             <div class="qrc-case-list-title">Test cases with a null suite_id (${orphanCases.length})</div>
             <ul class="qrc-case-list">
-              ${orphanCases
+              ${orphanCases.map((testCase) => renderCaseItem(testCase)).join("")}
+            </ul>
+          </div>
+        `
+        : "";
+
+      const jiraCases = evaluation.caseCheck.casesWithJiraTicket || [];
+      const jiraListBlock = jiraCases.length
+        ? `
+          <div class="qrc-case-list-wrap">
+            <div class="qrc-case-list-title">Test cases referencing a Jira or PDR ticket (${jiraCases.length})</div>
+            <ul class="qrc-case-list">
+              ${jiraCases
                 .map((testCase) => {
-                  const label = testCase.title || `Case #${testCase.id}`;
-                  const idSuffix = testCase.id != null ? ` <span class="qrc-case-id">#${escapeHtml(String(testCase.id))}</span>` : "";
-                  return `<li>${escapeHtml(label)}${idSuffix}</li>`;
+                  const ticketSuffix = (testCase.tickets || []).length
+                    ? ` <span class="qrc-case-id">${escapeHtml(testCase.tickets.join(", "))}</span>`
+                    : "";
+                  return renderCaseItem(testCase, ticketSuffix);
+                })
+                .join("")}
+            </ul>
+          </div>
+        `
+        : "";
+
+      const flaggedSuites = evaluation.suiteCheck.flaggedSuites || [];
+      const flaggedSuiteListBlock = flaggedSuites.length
+        ? `
+          <div class="qrc-case-list-wrap">
+            <div class="qrc-case-list-title">Suites breaking the rules above (${flaggedSuites.length})</div>
+            <ul class="qrc-case-list">
+              ${flaggedSuites
+                .map((suite) => {
+                  const label = suite.name || `Suite #${suite.id}`;
+                  if (suite.id != null) {
+                    const href = qaseSuiteUrl(projectCode, suite.id);
+                    return `<li><a class="qrc-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)} <span class="qrc-case-id">#${escapeHtml(String(suite.id))}</span></a></li>`;
+                  }
+                  return `<li>${escapeHtml(label)}</li>`;
                 })
                 .join("")}
             </ul>
@@ -1460,6 +1637,7 @@
           <span class="qrc-pill ${evaluation.planCheck.passed ? "pass" : "fail"}">Test Plans ${evaluation.planCheck.passed ? "✓" : "✕"}</span>
           <span class="qrc-pill ${evaluation.environmentCheck.passed ? "pass" : "fail"}">Environments ${evaluation.environmentCheck.passed ? "✓" : "✕"}</span>
           <span class="qrc-pill ${evaluation.caseCheck.passed ? "pass" : "fail"}">Test Cases ${evaluation.caseCheck.passed ? "✓" : "✕"}</span>
+          <span class="qrc-pill ${evaluation.runCheck.passed ? "pass" : "fail"}">Test Runs ${evaluation.runCheck.passed ? "✓" : "✕"}</span>
         </div>
 
         <details class="qrc-details" ${evaluation.suiteCheck.passed ? "" : "open"}>
@@ -1476,6 +1654,7 @@
               ${requirementRows}
             </tbody>
           </table>
+          ${flaggedSuiteListBlock}
         </details>
 
         <details class="qrc-details" ${evaluation.planCheck.passed ? "" : "open"}>
@@ -1525,6 +1704,23 @@
             </tbody>
           </table>
           ${orphanListBlock}
+          ${jiraListBlock}
+        </details>
+
+        <details class="qrc-details" ${evaluation.runCheck.passed ? "" : "open"}>
+          <summary class="qrc-summary">Test Run Rules</summary>
+          <table class="qrc-table">
+            <thead>
+              <tr>
+                <th>Test Run Rule</th>
+                <th>Status</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${runRequirementRows}
+            </tbody>
+          </table>
         </details>
 
         ${errorRows ? `
@@ -1556,6 +1752,14 @@
 
     function statusChip(passed) {
       return `<span class="qrc-chip ${passed ? "pass" : "fail"}">${passed ? "✓ PASS" : "✕ FAIL"}</span>`;
+    }
+
+    function qaseCaseUrl(projectCode, caseId) {
+      return `https://app.qase.io/case/${encodeURIComponent(projectCode)}-${encodeURIComponent(String(caseId))}`;
+    }
+
+    function qaseSuiteUrl(projectCode, suiteId) {
+      return `https://app.qase.io/project/${encodeURIComponent(projectCode)}?suite=${encodeURIComponent(String(suiteId))}`;
     }
 
     function escapeHtml(value) {
