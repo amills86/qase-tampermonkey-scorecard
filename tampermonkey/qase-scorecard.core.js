@@ -15,11 +15,11 @@
     const REQUIRED_TOP_LEVEL_SUITE_RULES = Object.freeze([
       Object.freeze({
         label: "Current State",
-        anyOf: Object.freeze(["Current State", "Current Production State", "Current", "Upcoming Features"])
+        anyOf: Object.freeze(["Current State", "Current Production State", "Current", "Current Tests", "Production"])
       }),
       Object.freeze({
         label: "Future State",
-        anyOf: Object.freeze(["Future State", "Upcoming Initiatives", "Future"])
+        anyOf: Object.freeze(["Future State", "Upcoming Initiatives", "Future", "Future Tests", "Upcoming Features"])
       })
     ]);
 
@@ -249,6 +249,30 @@
           line-height: 1.5;
           color: var(--qrc-text);
         }
+        .qrc-intro-list {
+          margin: 10px 0 0;
+          padding-left: 4px;
+          list-style: none;
+          font-size: 14px;
+          line-height: 1.5;
+          color: var(--qrc-text);
+        }
+        .qrc-intro-list li {
+          margin-top: 6px;
+          padding-left: 4px;
+        }
+        .qrc-intro-text + .qrc-intro-text {
+          margin-top: 12px;
+        }
+        .qrc-intro-link {
+          color: var(--qrc-accent);
+          font-weight: 600;
+          text-decoration: underline;
+        }
+        .qrc-intro-link:hover,
+        .qrc-intro-link:focus-visible {
+          text-decoration: none;
+        }
         .qrc-project-line {
           display: flex;
           align-items: center;
@@ -387,6 +411,24 @@
         .qrc-summary:hover {
           background: var(--qrc-details-hover);
         }
+        .qrc-section-status {
+          margin-left: auto;
+          padding: 2px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 700;
+          border: 1px solid transparent;
+        }
+        .qrc-section-status.pass {
+          background: var(--qrc-pass-soft-bg);
+          color: var(--qrc-pass-soft-text);
+          border-color: var(--qrc-pass-soft-border);
+        }
+        .qrc-section-status.fail {
+          background: var(--qrc-fail-soft-bg);
+          color: var(--qrc-fail-soft-text);
+          border-color: var(--qrc-fail-soft-border);
+        }
         .qrc-table {
           width: 100%;
           border-collapse: collapse;
@@ -507,15 +549,30 @@
       overlay.className = "qrc-overlay";
 
       overlay.innerHTML = `
-        <div class="qrc-modal" role="dialog" aria-modal="true" aria-label="Qase Repo Checker">
+        <div class="qrc-modal" role="dialog" aria-modal="true" aria-label="Qase Scorecard Tool">
           <div class="qrc-head">
-            <h2 class="qrc-title">Qase Repo Checker</h2>
+            <h2 class="qrc-title">Qase Scorecard Tool</h2>
             <button class="qrc-close" type="button" aria-label="Close" title="Close">&#10005;</button>
           </div>
           <div class="qrc-body">
             <p class="qrc-intro-text">
-              Evaluate your test repository organization against our standards.
+              📊 This tool scores your Qase project against our test repository standards and
+              flags anything that needs attention. It checks that your project has:
             </p>
+            <ul class="qrc-intro-list">
+              <li>🗂️ The required top-level suites that indicate current vs. upcoming tests</li>
+              <li>🚫 No discouraged suite names (e.g. "Smoke", "Regression", "Manual", "Automated")</li>
+              <li>📋 At least one test plan and none that are empty</li>
+              <li>🌐 The required environments configured</li>
+              <li>🔗 All test cases assigned to a suite with no Jira/PDR ticket numbers in their titles</li>
+              <li>📄 No forbidden substrings in any suite title (e.g. ".spec.ts", ".cy.js", ".cs")</li>
+              <li>🏃 Recent test runs</li>
+            </ul>
+            <p class="qrc-intro-text">
+              📖 To view our Qase standards please
+              <a class="qrc-intro-link" href="https://docs.nucleus.paylocity.com/docs/standards/testing/Qase" target="_blank" rel="noopener noreferrer">visit the documentation here</a>.
+            </p>
+
 
             <div class="qrc-project-line">
               <span class="qrc-project-label">Project code being evaluated:</span>
@@ -1641,7 +1698,7 @@
         </div>
 
         <details class="qrc-details" ${evaluation.suiteCheck.passed ? "" : "open"}>
-          <summary class="qrc-summary">Suite Rules</summary>
+          <summary class="qrc-summary">Suite Rules<span class="qrc-section-status ${evaluation.suiteCheck.passed ? "pass" : "fail"}">${evaluation.suiteCheck.passed ? "✓ Passed" : "✕ Needs attention"}</span></summary>
           <table class="qrc-table">
             <thead>
               <tr>
@@ -1658,7 +1715,7 @@
         </details>
 
         <details class="qrc-details" ${evaluation.planCheck.passed ? "" : "open"}>
-          <summary class="qrc-summary">Test Plan Rules</summary>
+          <summary class="qrc-summary">Test Plan Rules<span class="qrc-section-status ${evaluation.planCheck.passed ? "pass" : "fail"}">${evaluation.planCheck.passed ? "✓ Passed" : "✕ Needs attention"}</span></summary>
           <table class="qrc-table">
             <thead>
               <tr>
@@ -1674,7 +1731,7 @@
         </details>
 
         <details class="qrc-details" ${evaluation.environmentCheck.passed ? "" : "open"}>
-          <summary class="qrc-summary">Environment Rules</summary>
+          <summary class="qrc-summary">Environment Rules<span class="qrc-section-status ${evaluation.environmentCheck.passed ? "pass" : "fail"}">${evaluation.environmentCheck.passed ? "✓ Passed" : "✕ Needs attention"}</span></summary>
           <table class="qrc-table">
             <thead>
               <tr>
@@ -1690,7 +1747,7 @@
         </details>
 
         <details class="qrc-details" ${evaluation.caseCheck.passed ? "" : "open"}>
-          <summary class="qrc-summary">Test Case Rules</summary>
+          <summary class="qrc-summary">Test Case Rules<span class="qrc-section-status ${evaluation.caseCheck.passed ? "pass" : "fail"}">${evaluation.caseCheck.passed ? "✓ Passed" : "✕ Needs attention"}</span></summary>
           <table class="qrc-table">
             <thead>
               <tr>
@@ -1708,7 +1765,7 @@
         </details>
 
         <details class="qrc-details" ${evaluation.runCheck.passed ? "" : "open"}>
-          <summary class="qrc-summary">Test Run Rules</summary>
+          <summary class="qrc-summary">Test Run Rules<span class="qrc-section-status ${evaluation.runCheck.passed ? "pass" : "fail"}">${evaluation.runCheck.passed ? "✓ Passed" : "✕ Needs attention"}</span></summary>
           <table class="qrc-table">
             <thead>
               <tr>
