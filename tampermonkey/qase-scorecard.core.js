@@ -66,6 +66,26 @@
     // within this many days satisfy the recency check.
     const RUN_RECENCY_DAYS = 14;
 
+    // Usage-event endpoint, stored encoded to keep the literal URL out of the
+    // source. Leave blank to disable usage events.
+    const USAGE_ENDPOINT_B64 =
+      "aHR0cHM6Ly9ob29rcy5zbGFjay5jb20vdHJpZ2dlcnMvVDAzNlZVOUQxLzExNDcwMDI0NjI2MTc5LzM0NGQxNGRjODdhZjQ2MzY1MjEyNzdmNDkwNWJkM2U4";
+
+    function getUsageEndpoint() {
+      const configured = String(runtimeConfig.usageEndpoint || "").trim();
+      if (configured) {
+        return configured;
+      }
+      if (!USAGE_ENDPOINT_B64) {
+        return "";
+      }
+      try {
+        return atob(USAGE_ENDPOINT_B64).trim();
+      } catch (err) {
+        return "";
+      }
+    }
+
     let runtimeConfig = { ...DEFAULTS };
     let injectedCss = "";
 
@@ -681,8 +701,11 @@
       state.evaluating = true;
       setEvaluateButtonBusy(true);
 
+      const projectCode = (detectQaseProjectCode() || "").toUpperCase();
+      // Best-effort: who is running the check. Never throws.
+      const user = await fetchCurrentUserName();
+
       try {
-        const projectCode = (detectQaseProjectCode() || "").toUpperCase();
         const token = String(runtimeConfig.qaseApiToken || "").trim();
 
         if (!projectCode) {
@@ -703,12 +726,125 @@
         state.renderedProjectCode = projectCode;
         setOpenTabVisible(true);
         setStatus("");
+
+        postUsageEvent({
+          projectCode,
+          user,
+          result: evaluation.overallPassed ? "pass" : "fail",
+          summary: buildResultSummary(evaluation)
+        });
       } catch (error) {
         setStatus(`Error: ${error.message}`, true);
+        postUsageEvent({
+          projectCode,
+          user,
+          result: "error",
+          error: error.message
+        });
       } finally {
         state.evaluating = false;
         setEvaluateButtonBusy(false);
       }
+    }
+
+    // Build a human-readable, multi-line breakdown of the evaluation:
+    // one line per section with a pass/fail icon, followed by the specific
+    // failing rules (and their detail text) indented beneath each section.
+    function buildResultSummary(evaluation) {
+      const sections = [
+        { name: "Suites", check: evaluation.suiteCheck },
+        { name: "Test Plans", check: evaluation.planCheck },
+        { name: "Environments", check: evaluation.environmentCheck },
+        { name: "Test Cases", check: evaluation.caseCheck },
+        { name: "Test Runs", check: evaluation.runCheck }
+      ];
+
+      const lines = [];
+      for (const { name, check } of sections) {
+        if (!check) {
+          continue;
+        }
+        lines.push(`${check.passed ? "✅" : "❌"} ${name}`);
+        const failingRules = (check.requirementResults || []).filter((rule) => !rule.passed);
+        for (const rule of failingRules) {
+          const detail = rule.details ? ` — ${rule.details}` : "";
+          lines.push(`   • ${rule.label}${detail}`);
+        }
+      }
+
+      return lines.join("\n");
+    }
+
+    // Best-effort usage event. Fire-and-forget: failures here must never
+    // disrupt the score check, so errors are swallowed silently.
+    function postUsageEvent({ projectCode, result, error, user, summary }) {
+      const endpoint = getUsageEndpoint();
+      if (!endpoint) {
+        return;
+      }
+
+      if (typeof GM_xmlhttpRequest !== "function") {
+        return;
+      }
+
+      // Flat object of string fields.
+      const payload = {
+        projectCode: projectCode || "unknown",
+        user: user || "unknown",
+        result,
+        summary: summary || "",
+        error: error || ""
+      };
+
+      try {
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: endpoint,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.stringify(payload),
+          onerror: () => {},
+          ontimeout: () => {}
+        });
+      } catch (err) {
+        // Swallow — usage events are non-critical.
+      }
+    }
+
+    // Resolve the logged-in user via Qase's app API (app.qase.io/v1/user/profile),
+    // which is authenticated by the browser session cookie — no API token needed.
+    // Same-origin request, so it carries cookies automatically. Best effort:
+    // resolves to "unknown" on any failure rather than rejecting.
+    function fetchCurrentUserName() {
+      return new Promise((resolve) => {
+        if (typeof GM_xmlhttpRequest !== "function") {
+          resolve("unknown");
+          return;
+        }
+
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: "https://app.qase.io/v1/user/profile",
+          headers: { accept: "application/json" },
+          onload: (response) => {
+            try {
+              const payload = JSON.parse(response.responseText || "{}");
+              // first_name / last_name live at the top level of the response.
+              // Tolerate a nested result/data envelope just in case.
+              const profile = payload.first_name != null || payload.last_name != null
+                ? payload
+                : (payload.result || payload.data || payload || {});
+              const firstName = String(profile.first_name || "").trim();
+              const lastName = String(profile.last_name || "").trim();
+              const fullName = `${firstName} ${lastName}`.trim();
+              resolve(fullName || String(profile.email || "").trim() || "unknown");
+            } catch (err) {
+              resolve("unknown");
+            }
+          },
+          onerror: () => resolve("unknown"),
+          ontimeout: () => resolve("unknown")
+        });
+      });
     }
 
     async function evaluateProjectWithQaseApis(projectCode, token) {

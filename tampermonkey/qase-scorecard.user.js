@@ -8,7 +8,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      api.qase.io
+// @connect      app.qase.io
 // @connect      raw.githubusercontent.com
+// @connect      hooks.slack.com
 // ==/UserScript==
 
 (async () => {
